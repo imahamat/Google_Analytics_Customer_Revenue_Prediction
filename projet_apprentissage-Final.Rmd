@@ -1,0 +1,1163 @@
+---
+title: "Projet Apprentissage"
+subtitle: "Arbre Forest"
+author: "Mahamat&Kevin&Abdallah"
+date: "`r format(Sys.time())`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+    toc_float: true
+    theme: cerulean
+    highlight: espresso
+editor_options: 
+  chunk_output_type: console
+---
+# Projet - Apprentissage
+
+## Exploration des données
+```{r}
+r = getOption("repos")
+r["CRAN"] = "http://cran.us.r-project.org"
+options(repos = r)
+# install packages 
+wd = "/Users/imahamat/Documents/IBO/IBO_5A/Apprentissage/Projet-Apprentissage"
+setwd(wd)
+list.files(path = wd)
+install.packages("cowplot")
+install.packages("tidyverse")
+install.packages("data.table")
+install.packages("DataExplorer")
+install.packages("ggthemes")
+install.packages("dummies")
+install.packages("h2o")
+install.packages("jsonlite")
+install.packages("rlist")
+install.packages("MASS")
+install.packages("tidyverse")
+install.packages("knitr")
+install.packages("reshape2")
+install.packages("ggplot2")
+install.packages("GGally")
+install.packages("boot")
+install.packages("rpart")
+install.packages("rattle")
+install.packages("mgcv")
+install.packages("neuralnet")
+install.packages("plyr")
+install.packages("caret")
+install.packages("e1071")
+install.packages("randomForest")
+install.packages("gbm")
+install.packages("reshape")
+install.packages("conflicted")
+conflict_prefer("select", "dplyr")
+conflict_prefer("filter", "dplyr")
+install.packages("magrittr")
+
+
+library(cowplot)## install kaggler package from github
+#* install packages *# 
+library(tidyverse) # metapackage with lots of helpful functions |  # for easy data manipulation and visualization
+library(data.table)
+example(data.table)                   # run the examples section of ?data.table
+?data.table        
+#update.packages()
+library(DataExplorer) 
+library(ggthemes)
+library(dummies)
+library(h2o)
+library(jsonlite)
+library(rlist)
+library(knitr) #Knitting RMDs and functionalities
+library(reshape2) #Data Wrangling
+library(GGally) #Data Visualization
+library(boot) #Resampling methods
+library(rpart) #Tree modeling
+library(rattle) #Better Vizzes
+library(mgcv) #GAM modeling
+library(neuralnet) #Neural Networks Model
+library(caret) #Cross Validation for Neural Networks
+library(e1071) #SVM model
+library(randomForest) #Random Forest
+library(gbm) #Gradient Boosting #
+library(reshape)
+library(conflicted)
+library(magrittr) # needs to be run every time you start R and want to use %>%
+
+```
+
+ Lecture des fichiers en entrée
+
+```{r}
+train<-fread("train.csv",stringsAsFactors = FALSE,colClasses=c("character","integer","character","character","character","character","character","character","character","integer","integer","integer")) ; 
+```
+
+Que trouve-t-on dans les données d'entrée ?
+
+```{r}
+glimpse(train)
+```
+
+```{r}
+head(train,1)
+```
+
+Extension des colonnes JSON dans l'ensemble de données Train et Test
+
+```{r}
+base::table(train$totals[1]) 
+```
+
+```{r}
+library(jsonlite)
+library(rlist)
+
+jsontodf <- function(col){
+    list.stack(lapply(col, function(j){
+    as.list(unlist(fromJSON(j)))}) , fill=TRUE)   
+}
+
+# Nettoyage des colonnes JSON
+
+# Train
+pattern = '""'
+train$totals=str_replace_all(train$totals,pattern,'"')
+train$trafficSource=str_replace_all(train$trafficSource,pattern,'"')
+train$geoNetwork=str_replace_all(train$geoNetwork,pattern,'"')
+train$device=str_replace_all(train$device,pattern,'"')
+
+# Conversion de chaque colonne JSON dans le train et le test
+tr_device <- jsontodf(train$device)
+tr_geoNetwork <- jsontodf(train$geoNetwork)
+tr_totals <- jsontodf(train$totals)
+tr_trafficSource <- jsontodf(train$trafficSource)
+
+# Combiner pour réaliser le train et test complets 
+train <- train %>%cbind(tr_device, tr_geoNetwork, tr_totals, tr_trafficSource) %>% select(-device, -geoNetwork, -totals, -trafficSource)
+```
+
+Types des Variables
+
+```{r}
+glimpse(train)
+```
+
+```{r}
+# Changement des types 
+train$visits <- as.numeric(train$visits)
+train$hits <- as.numeric(train$hits)
+train$pageviews <- as.numeric(train$pageviews)
+train$bounces <- as.numeric(train$bounces)
+train$newVisits <- as.numeric(train$newVisits)
+train$transactionRevenue <- as.numeric(train$transactionRevenue)
+train$date <- as.Date(strptime(train$date, format = "%Y%m%d"))
+```
+
+Pourcentage des variables manquantes
+```{r}
+plot_missing(train)
+```
+ 
+Analyse des variables discrètes
+```{r}
+options(repr.plot.width=12)
+t=train[1:10]
+plot_bar(t)
+```
+
+ Fonction qui retourne le pourcentage des NA 
+```{r}
+isna<-sort(sapply(train,function(x) sum(is.na(x))/length(x)),decreasing = TRUE)
+isna<-isna[isna>0]
+isna
+# integer columns in new data.table
+isnaDT<-data.table(var=names(isna),isna=isna)
+isnaDT
+```
+
+ Continous NA columns / Nb of NA in each columns
+```{r}
+# Int 
+int<-names(train)[which(sapply(select(train,-c(bounces,newVisits)), class)%in% c("integer","numeric"))] #continous columns
+int
+level<-sort(sapply(train[,int,with=FALSE], function(x) length(unique(x))))
+level
+```
+
+ Discrete NA Columns / Nb of NA in each columns
+```{r}
+char<-names(train)[which(sapply(train, class)=="character")]  # discrete columns
+char
+level<-sort(sapply(train[,char,with=FALSE], function(x) length(unique(x))))
+level
+```
+
+ Traitement des NA
+```{r}
+# Traitement pour le Train
+for (c in c("bounces","newVisits")) train[(is.na(get(c))),(c):=0] # Bounces & newVisits sont des boolean donc on remplace NA par 0 
+for (c in c("isMobile")) train[(get(c)==FALSE),(c):=0] # On Modifie le boolean is Mobile par True/False par 1/0 remplace 
+for (c in c("isMobile")) train[(get(c)==TRUE),(c):=1]
+for (c in c("keyword")) train[(get(c)=="(not provided)"),(c):="non fourni"] # on remplace (not provided) par non fourni
+for (c in c("keyword")) train[(is.na(get(c))),(c):="non fourni"] # On remplace NA par non fourni
+for (c in c("referralPath")) train[(is.na(get(c))),(c):="non fourni"] # On remplace NA par non fourni
+for (c in c("isTrueDirect")) train[(is.na(get(c))),(c):=0] # On remplace NA par False ou 0  puisque c'est un boolean et y'a des TRUE à part les NA qu'on va remplacer par 1
+for (c in c("isTrueDirect"))train[(get(c)=="TRUE"),(c):=1] # On remplace TRUE par 1
+for (c in c("adwordsClickInfo.gclId")) train[(is.na(get(c))),(c):="non fourni"] # On remplace NA par non fourni
+for (c in c("adwordsClickInfo.isVideoAd")) train[(is.na(get(c))),(c):=1] # On remplace NA par TRUE ou 1  puisque c'est un boolean et y'a des FALSE à part les NA qu'on va remplacer par 0
+for (c in c("adwordsClickInfo.isVideoAd"))train[(get(c)=="FALSE"),(c):=0] # On remplace TRUE par 1
+for (c in c("adwordsClickInfo.adNetworkType")) train[(is.na(get(c))),(c):="non fourni"]  # On remplace NA par non fourni
+for (c in c("adwordsClickInfo.slot")) train[(is.na(get(c))),(c):="non fourni"]  # On remplace NA par non fourni
+for (c in c("adwordsClickInfo.page")) train[(is.na(get(c))),(c):=0] # On remplace Na par 0 car boolean 
+for (c in c("pageviews")) train[(is.na(get(c))),(c):=median(train[[c]],na.rm = TRUE)] # on remplace les NA par le median 
+
+train$transactionRevenue[is.na(train$transactionRevenue)] <- 0  # 0:veut dire pas de revenue 
+train$log_revenue <- log1p(train$transactionRevenue) # log1p = log(x+1) pour eviter l'infini
+train$class_revenue=ifelse(train$log_revenue==0,0,1)
+
+train$adwordsClickInfo.page <- as.numeric(train$adwordsClickInfo.page)
+train$adwordsClickInfo.isVideoAd <- as.numeric(train$adwordsClickInfo.isVideoAd)
+train$isTrueDirect <- as.numeric(train$isTrueDirect)
+train$isMobile <- as.numeric(train$isMobile) # convertir en int 
+train$country <- as.factor(train$country)
+
+train$adContent<-NULL
+train$campaignCode<-NULL
+train$screenResolution=NULL
+train$cityId=NULL
+train$latitude=NULL
+train$longitude=NULL
+train$networkLocation=NULL
+train$browserVersion=NULL
+train$browserSize=NULL
+train$operatingSystemVersion=NULL
+train$mobileDeviceBranding=NULL
+train$mobileDeviceModel=NULL
+train$mobileInputSelector=NULL
+train$mobileDeviceInfo=NULL
+train$mobileDeviceMarketingName=NULL
+train$adwordsClickInfo.adNetworkType=NULL
+train$adwordsClickInfo.gclId=NULL
+train$adwordsClickInfo.slot=NULL
+train$adwordsClickInfo.criteriaParameters=NULL
+train$referralPath=NULL
+train$campaign=NULL
+train$socialEngagementType=NULL
+train$flashVersion=NULL
+train$language=NULL
+train$screenColors=NULL
+#train$source=NULL
+#train$medium=NULL
+#train$metro=NULL
+
+```
+
+```{r}
+# Sauvegarder Train 
+new.train <- copy(train)
+data.table::fwrite(train,file="/Users/imahamat/Documents/IBO/IBO_5A/Apprentissage/Projet-Apprentissage/dataset.csv")
+```
+
+```{r}
+plot_missing(train)
+```
+
+```{r}
+# DataExplorer::create_report(train) # Impossible car la machine plante 
+```
+
+ Les Traitements de donnees donc on récupere Train et Test traités qu'on avait sauvegardé
+```{r}
+dataset <- fread("/Users/imahamat/Documents/IBO/IBO_5A/Apprentissage/Projet-Apprentissage/dataset.csv")
+train=copy(dataset)
+```
+
+## Feature engineering
+
+```{r}
+#train_old<-copy(train)
+#train$dayofweek <- weekdays(as.Date(train$date))
+train$dayofweek <- weekdays(train$date)
+#train$month <- months.Date(as.Date(train$date))
+train$month <- months.Date(train$date)
+train$operatingSystem <- ifelse(train$operatingSystem %in% c("Android","Macintosh","Linux","Windows","iOS","Chrome OS"),train$operatingSystem,"Others")
+
+# on transforme en numerique les variables charactere à tendence classification par 0,1,ou 2.
+library(dummies)
+
+train <- cbind(train, dummy(train$channelGrouping, sep='_'), dummy(train$isMobile, sep='_'), dummy(train$region, sep='_'),
+               dummy(train$operatingSystem, sep='_'))#,dummy(train$continent, sep='_'),dummy(train$country, sep='_'))
+
+train_dummies=copy(train)
+data.table::fwrite(train_dummies,file="/Users/imahamat/Documents/IBO/IBO_5A/Apprentissage/Projet-Apprentissage/train_dummies.csv")
+train_dummies <- fread("/Users/imahamat/Documents/IBO/IBO_5A/Apprentissage/Projet-Apprentissage/train_dummies.csv")
+#train = copy(train_dummies)
+```
+
+ Spliting the dataset 
+```{r}
+library(caTools)
+set.seed(92400)
+
+split= sample.split(train$log_revenue, SplitRatio = 0.75)
+
+training_set= subset(train, split== TRUE)
+
+data.table::fwrite(training_set,file="/Users/imahamat/Documents/IBO/IBO_5A/Apprentissage/Projet-Apprentissage/training_set.csv")
+training_set <- fread("/Users/imahamat/Documents/IBO/IBO_5A/Apprentissage/Projet-Apprentissage/training_set.csv")
+
+test_set=subset (train, split== FALSE)
+
+data.table::fwrite(test_set,file="/Users/imahamat/Documents/IBO/IBO_5A/Apprentissage/Projet-Apprentissage/test_set.csv")
+test_set <- fread("/Users/imahamat/Documents/IBO/IBO_5A/Apprentissage/Projet-Apprentissage/test_set.csv")
+```
+ Checking the dimension of the new dataset
+```{r}
+dim(training_set)
+names(training_set)
+#qplot(data=train,x=log_revenue,binwidth= 25)
+#qplot(data=train,x=transactionRevenue,binwidth= 25)
+```
+
+```{r}
+#Connecticut – $28,766 (€21 610)
+#District de Columbia – $28,659 (€21 530)
+#New Jersey – $27,006 (€20 288)
+#Massachusetts – $25,952 (€19 497)
+#Maryland – $25,614 (€19 243)
+#Colorado – $24,049 (€18 067)
+#Virginie – $23,975 (€18 011)
+#New Hampshire – $23,844 (€17 913)
+#New York – $23,389 (€17 571)
+#Delaware – $23,305 (€17 508)
+#Minnesota – $23,198 (€17 428)
+#Illinois – $23,104 (€17 357)
+#Washington – $22,973 (€17 259)
+#Californie – $22,711 (€17 062)
+#Alaska – $22,660 (€17 024)
+#Michigan – $22,168 (€16 654)
+#Nevada – $21,989 (€16 519)
+#Rhode Island – $21,688 (€16 293)
+#États-Unis d'Amérique – $21,587 (€16 217)
+#Floride – $21,557 (€16 195)
+#Hawaï – $21,525 (€16 171)
+#les 20 etats les plus riches en revenus par habitants aux USA
+#i_usa : 1 ou 0 en fonction de si oui ou non lindividu est dans cet etat
+
+etats_usa_20 <- ifelse(train$region %in% c("Connecticut","istrict de Columbia","New Jersey","Massachusetts","Maryland","Colorado", "Virginie", "New Hampshire","New York","Delaware","Minnesota","Illinois","Washington","Californie","Alaska","Michigan","Nevada", "Rhode Island", "États-Unis d'Amérique","Floride","Hawaï" ),train$region,"Others")
+
+table(etats_usa_20[!(etats_usa_20=="Others")])
+
+is_usa <- ifelse(train$region %in% c("Connecticut","istrict de Columbia","New Jersey","Massachusetts","Maryland","Colorado", "Virginie", "New Hampshire","New York","Delaware","Minnesota","Illinois","Washington","Californie","Alaska","Michigan","Nevada", "Rhode Island", "États-Unis d'Amérique","Floride","Hawaï" ),1,0)
+train$in_usa = is_usa
+```
+### Partie 1 - Regression
+
+#### 1.A - Implementation avec la library H2o 
+
+##### 1.A.a Preparation des paramètres de la librairy h2o
+```{r}
+library(h2o)
+h2o.init(nthreads=-1,max_mem_size='2G')
+#h2o.shutdown()
+```
+```{r}
+x <- as.h2o(training_set)
+```
+```{r}
+x_text <- as.h2o(test_set)
+```
+```{r}
+length(names(training_set))
+names(train)
+```
+```{r}
+features <- colnames(train)[!(colnames(train) %in% c("date",
+                                                     "visitStartTime",
+                                                     "visitEndTime",
+                                                     "fullVisitorId",                   
+                                                     "sessionId",
+                                                     "visitId", "flashVersion", "browserSize", "transactionRevenue",
+                                                     "log_revenue",
+                                                     "class_revenue",
+                                                      "in_usa"))]
+```
+##### 1.A.b Random Forest (1)
+```{r}
+mod.rf1 <- h2o.randomForest(x=features,y="log_revenue",ntrees = 50,max_depth = 30,training_frame=x)
+#nbins_cats = 100,
+```
+```{r}
+summary(mod.rf1)
+mod.rf1@model$training_metrics 
+#MSE:  3.657805
+#RMSE:  1.912539
+#MAE:  0.342532
+#RMSLE:  0.3689041
+#Mean Residual Deviance :  3.657805
+#R^2 :  0.211513
+```
+```{r}
+h2o.varimp_plot(mod.rf1)
+```
+##### 1.A.c Random Forest (2)
+```{r}
+mod.rf2 <- h2o.randomForest(         ## h2o.randomForest function
+  training_frame = x,        ## the H2O frame for training
+  x=features,                        ## the predictor columns, by column index
+  y="log_revenue",                          ## the target index (what we are predicting)
+  model_id = "mod.rf2",    ## name the model in H2O
+                                 ##   not required, but helps use Flow
+  ntrees = 200,                  ## use a maximum of 200 trees to create the
+                                 ##  random forest model. The default is 50.
+                                 ##  I have increased it because I will let 
+                                 ##  the early stopping criteria decide when
+                                 ##  the random forest is sufficiently accurate
+  stopping_rounds = 2,           ## Stop fitting new trees when the 2-tree
+                                 ##  average is within 0.001 (default) of 
+                                 ##  the prior two 2-tree averages.
+                                 ##  Can be thought of as a convergence setting
+  score_each_iteration = T,      ## Predict against training and validation for
+                                 ##  each tree. Default will skip several.
+  seed = 1000000)                ## Set the random seed so that this can be
+                                 ##  reproduced.
+```
+```{r}
+summary(mod.rf2)                     ## View information about the model.
+                                 ## Keys to look for are validation performance
+                                ##  and variable importance
+```
+```{r}
+mod.rf2@model$training_metrics   ## A more direct way to access the validation 
+                                 ##  metrics. Performance metrics depend on 
+                                 ##  the type of model being built. With a
+                                 ##  multinomial classification, we will primarily
+                                 ##  look at the confusion matrix, and overall
+                                 ##  accuracy via hit_ratio @ k=1.
+
+#MSE:  3.436476
+#RMSE:  1.853773
+#MAE:  0.3418092
+#RMSLE:  0.3608869
+#Mean Residual Deviance :  3.436476
+#R^2 :  0.2592235
+```
+```{r}
+h2o.varimp_plot(mod.rf2)
+```
+##### 1.A.d Random Forest (3)
+```{r}
+mod.rf3 <- h2o.randomForest(        ##
+  training_frame = x,       ##
+   x=features,                        ## the predictor columns, by column index
+  y="log_revenue",                                ##
+  model_id = "mod.rf3",     ## 
+  ntrees = 200,                 ##
+  max_depth = 30,               ## Increase depth, from 20
+  stopping_rounds = 2,          ##
+  stopping_tolerance = 1e-2,    ##
+  score_each_iteration = T,     ##
+  seed=3000000)                 ##
+```
+```{r}
+h2o.varimp_plot(mod.rf3)
+```
+```{r}
+summary(mod.rf3)
+mod.rf3@model$training_metrics 
+#MSE:  3.858218
+#RMSE:  1.964235
+#MAE:  0.344277
+#RMSLE:  0.3762732
+#Mean Residual Deviance :  3.858218
+#R^2 :  0.1683961
+```
+Le mode.rf2 est meilleur comparer aux deux autres.
+##### 1.A.e GBM (1)
+```{r}
+mod.gbm1 <- h2o.gbm(
+  training_frame = x,     ##
+   x=features,                        ## the predictor columns, by column index
+  y="log_revenue",               
+  ntrees = 30,                ## add a few trees (from 20, though default is 50)
+  learn_rate = 0.3,           ## increase the learning rate even further
+  max_depth = 10,             ## 
+  sample_rate = 0.7,          ## use a random 70% of the rows to fit each tree
+  col_sample_rate = 0.7,       ## use 70% of the columns to fit each tree
+  stopping_rounds = 2,        ## 
+  stopping_tolerance = 0.01,  ##
+  score_each_iteration = T,   ##
+  model_id = "mod.gbm1",  ##
+  seed = 2000000)             ##
+```
+```{r}
+summary(mod.gbm1)
+```
+
+```{r}
+mod.gbm1@model$training_metrics 
+#MSE:  2.770185
+#RMSE:  1.664387
+#MAE:  0.3279381
+#RMSLE:  NaN
+#Mean Residual Deviance :  2.770185
+#R^2 :  0.402851
+```
+```{r}
+h2o.varimp_plot(mod.gbm1)
+```
+##### 1.A.f GBM (2)
+```{r}
+mod.gbm2 <- h2o.gbm(
+  training_frame = x,     ##
+   x=features,                        ## the predictor columns, by column index
+  y="log_revenue",    
+  ntrees = 30,                ## decrease the trees, mostly to allow for run time
+                              ##  (from 50)
+  learn_rate = 0.1,           ## increase the learning rate (from 0.1)
+  max_depth = 10,             ## increase the depth (from 5)
+  stopping_rounds = 2,        ## 
+  stopping_tolerance = 0.01,  ##
+  score_each_iteration = T,   ##
+  model_id = "mod.gbm2",  ## "
+  seed = 2000000)             ##
+       
+```
+```{r}
+summary(mod.gbm2)
+mod.gbm2@model$training_metrics 
+#MSE:  2.854363
+#RMSE:  1.689486
+#MAE:  0.350397
+#RMSLE:  0.3320888
+#Mean Residual Deviance :  2.854363
+#R^2 :  0.3847053
+```
+```{r}
+h2o.varimp_plot(mod.gbm2)
+```
+##### 1.A.g GBM (3)
+```{r}
+mod.gbm3 <- h2o.gbm(
+  training_frame = x,    ## the H2O frame for validation (not required)
+  x=features,                        ## the predictor columns, by column index
+  y="log_revenue",                  ## the target index (what we are predicting)
+  model_id = "mod.gbm3",     ## name the model in H2O
+  seed = 2000000)                ## Set the random seed for reproducability
+
+                  ## View information about the model.
+```
+```{r}
+summary(mod.gbm3) 
+mod.gbm3@model$training_metrics 
+#SE:  3.058492
+#RMSE:  1.748855
+#MAE:  0.3537269
+#RMSLE:  NaN
+#Mean Residual Deviance :  3.058492
+#R^2 :  0.3407027
+```
+```{r}
+h2o.varimp_plot(mod.gbm3)
+```
+##### 1.A.h - XGBoost (1)
+```{r}
+mod.xgboost1 <-h2o.xgboost( x= features, y="log_revenue", training_frame=x ,
+  ntrees = 50,                ## add a few trees (from 20, though default is 50)
+  learn_rate = 0.3,           ## increase the learning rate even further
+  max_depth = 10,             ## 
+  sample_rate = 0.7,          ## use a random 70% of the rows to fit each tree
+  col_sample_rate = 0.7,       ## use 70% of the columns to fit each tree
+  stopping_rounds = 2,        ## 
+  stopping_tolerance = 0.01,  ##
+  score_each_iteration = T,   ##
+  model_id = "mod.xgboost1",  ##
+  seed = 20000)  
+
+```
+```{r}
+mod.xgboost1@model$training_metrics
+#MSE:  2.554891
+#RMSE:  1.598403
+#MAE:  0.3106087
+#RMSLE:  NaN
+#Mean Residual Deviance :  2.554891
+```
+```{r}
+summary(mod.xgboost1)
+```
+```{r}
+h2o.varimp_plot(mod.xgboost1)
+```
+##### 1.A.h Vérification de l'éfficacité de notre modèle avec un aml 
+```{r}
+###############################################################
+# Run AutoML for 20 base models (limited to 1 hour max runtime by default)
+aml <- h2o.automl(x = features, y = "log_revenue",
+                  training_frame = x,
+                  max_models = 20,
+                  seed = 1)
+
+# View the AutoML Leaderboard
+lb <- aml@leaderboard
+
+print(lb, n = nrow(lb))  # Print all rows instead of default (6 rows)
+
+# The leader model is stored here
+aml@leader
+aml@leader@model$training_metrics
+# If you need to generate predictions on a test set, you can make
+# predictions directly on the `"H2OAutoML"` object, or on the leader
+# model object directly
+
+pred <- as.data.frame(h2o.predict(aml,x_text))  # predict(aml, test) also works
+
+# or:
+
+pred <- as.data.frame(h2o.predict(aml@leader,x_text))
+```
+
+```{r}
+#################################################################
+aml2 <- h2o.automl(x = features, y = "log_revenue",
+                  training_frame = x,
+                  max_models = 10,
+                  seed = 1)
+
+print(aml2@leaderboard)
+```
+Ensemble Exploration
+To understand how the ensemble works, let's take a peek inside the Stacked Ensemble "All Models" model.  The "All Models" ensemble is an ensemble of all of the individual models in the AutoML run.  This is often the top performing model on the leaderboard.
+```{r}
+# Get model ids for all models in the AutoML Leaderboard
+model_ids <- as.data.frame(aml2@leaderboard$model_id)[,1]
+# Get the "All Models" Stacked Ensemble model
+se <- h2o.getModel(grep("StackedEnsemble_AllModels", model_ids, value = TRUE)[1])
+# Get the Stacked Ensemble metalearner model
+metalearner <- h2o.getModel(se@model$metalearner$name)
+```
+Examine the variable importance of the metalearner (combiner) algorithm in the ensemble.  This shows us how much each base learner is contributing to the ensemble. The AutoML Stacked Ensembles use the default metalearner algorithm (GLM with non-negative weights), so the variable importance of the metalearner is actually the standardized coefficient magnitudes of the GLM. 
+```{r}
+h2o.varimp(metalearner)
+```
+We can also plot the base learner contributions to the ensemble.
+```{r}
+h2o.varimp_plot(metalearner)
+```
+If needed, the standard `h2o.performance()` function can be applied to the AutoML leader model and a test set to generate an H2O model performance object.
+```{r}
+perf <- h2o.performance(aml2@leader, x_text)
+perf
+```
+##### 1.A.i Sauvegarder des Résultats Predit des differentes modèles dans submission  
+```{r}
+sample_submission <- read_csv("/Users/imahamat/Documents/IBO/IBO_5A/Apprentissage/Projet-Apprentissage/sample_submission.csv")
+names(sample_submission)
+```
+```{r}
+# On choisi mod.xgboost1 => MSE : 2.55
+predictions <- as.data.frame(h2o.predict(mod.xgboost1,x_text))
+```
+```{r}
+submission <- data.frame(fullVisitorId=test_set$fullVisitorId, PredictedLogRevenue=predictions)
+names(submission) <- names(sample_submission)
+```
+```{r}
+submission <- submission  %>% group_by(fullVisitorId)  %>% summarise(PredictedLogRevenue = sum(PredictedLogRevenue))
+glimpse(submission)
+```
+```{r}
+write.csv(submission,"/Users/imahamat/Documents/IBO/IBO_5A/Apprentissage/Projet-Apprentissage/h2o_mod.xboost1.csv",row.names=F)
+```
+```{r}
+write.csv(sub,"/Users/imahamat/Documents/IBO/IBO_5A/Apprentissage/Projet-Apprentissage/h2o_aml_leader.csv",row.names=F)
+```
+
+#### 1.B - Linear Regression
+```{r}
+dim(mini_training_set)
+# Train the model using the training sets and check score
+linear <- lm(log_revenue ~ ., data = training_set[1:10000])
+summary(linear)
+#Predict Output
+predicted= predict(linear,x_test)
+```
+#### 1.C - Decision Tree  
+```{r}
+library(rpart)
+
+# grow tree 
+fit <- rpart(log_revenue ~ ., data = training_set)
+summary(fit)
+#Predict Output 
+predicted= predict(fit,test_set)
+```
+#### 1.D - Random Forest
+```{r}
+library(randomForest)
+# Fitting model
+fit <- randomForest(log_revenue ~ ., training_set,ntree=500)
+summary(fit)
+#Predict Output 
+predicted= predict(fit,test_set)
+```
+#### 1.E - Gradient Boosting algorithms
+```{r}
+library(caret)
+
+# Fitting model
+fitControl <- trainControl( method = "repeatedcv", number = 4, repeats = 4)
+fit <- train(log_revenue ~ ., data = training_set, method = "gbm", trControl = fitControl,verbose = FALSE)
+predicted= predict(fit,test_set,type= "prob")[,2] 
+```
+
+##### 1.F - GBM
+##### 1.G - XGBoost
+##### 1.H - LightGBM
+##### 1.I - CatBoost
+
+#### 1.J - SVM
+```{r}
+library(e1071)
+
+# Fitting model
+fit <-svm(log_revenue ~ ., data = training_set)
+summary(fit)
+#Predict Output 
+predicted= predict(fit,test_set)
+```
+#### 1.K - Naive Bayes
+```{r}
+library(e1071)
+
+# Fitting model
+fit <-naiveBayes(log_revenue ~ ., data = training_set)
+summary(fit)
+#Predict Output 
+predicted= predict(fit,test_set)
+```
+
+### Partie 2 - Clasification
+
+#### 2.A - Logistic Regression (GLM) (1)
+```{r}
+# transactionRevenue => colonne 24
+# log_revenue => colonne 36
+# class_revenue => colonne 37
+features <- colnames(train)[!(colnames(train) %in% c("date",
+                                                     "visitStartTime",
+                                                     "visitEndTime",
+                                                     "fullVisitorId",                   
+                                                     "sessionId",
+                                                     "visitId", "flashVersion", "browserSize", "transactionRevenue",
+                                                    # "channelGrouping",
+                                                     "log_revenue",
+                                                    "class_revenue",
+                                                    "in_usa",
+                                                    "log_revenue"))]
+
+### glm1 ###
+set.seed(123)
+library(dummies)
+
+#train <- cbind(train, dummy(train$channelGrouping), dummy(train$isMobile), dummy(train$region),
+          #     dummy(train$operatingSystem))
+
+# training_set$Class=ifelse(training_set$log_revenue==0,0,1)
+# On va retirer les variables non significative (bounces, adwordsClickInfo, browser,keyword, region, networkDomain,adwordsClickInfo.isVideoAd,adwordsClickInfo.page)
+#train$source=as.factor(train$source)
+
+#pageviews+hits+visitNumber+newVisits+isTrueDirect+isMobile+month+V4+deviceCategorycity+
+#+V2+operatingSystem+continent+region+networkDomain+source+dayofweek+V3
+
+# Variables importantes : (pageviews,hits,visitNumber,newVisits,isTrueDirect,isMobile,month, V4, operatingSystem, continent,dayofweek,channelGrouping, )
+
+mod2.glm1 <- h2o.glm(family= "binomial", x= features, y="in_usa", training_frame=x, lambda = 0)
+
+
+# Coefficients that can be applied to the non-standardized data
+h2o.coef(mod2.glm1)
+
+# Coefficients fitted on the standardized data (requires standardize=TRUE, which is on by default)
+h2o.coef_norm(mod2.glm1)
+
+# Print the coefficients table
+mod2.glm1@model$coefficients_table
+
+mod2.glm1@model$training_metrics
+
+# Retrieve a graphical plot of the standardized coefficient magnitudes
+h2o.std_coef_plot(mod2.glm1)
+
+mod2.glm1@model$training_metrics
+```
+```{r}
+summary(mod2.glm1)
+#MSE:  1.515006e-10
+#RMSE:  1.230856e-05
+#LogLoss:  3.658414e-06
+#Mean Per-Class Error:  0
+#AUC:  1
+#pr_auc:  0.999946
+#Gini:  1
+#R^2:  1
+#Residual Deviance:  4.968243
+#AIC:  810.9682
+```
+```{r}
+h2o.varimp_plot(mod2.glm1)
+h2o.confusionMatrix(mod2.glm1, valid = FALSE)
+```
+```{r}
+fpr = mod2.glm1@model$training_metrics@metrics$thresholds_and_metric_scores$fpr
+tpr = mod2.glm1@model$training_metrics@metrics$thresholds_and_metric_scores$tpr
+fpr_val = mod2.glm1@model$validation_metrics@metrics$thresholds_and_metric_scores$fpr
+tpr_val = mod2.glm1@model$validation_metrics@metrics$thresholds_and_metric_scores$tpr
+plot(fpr,tpr, type='l')
+title('AUC')
+lines(fpr_val,tpr_val,type='l',col='red')
+legend("bottomright",c("Train", "Validation"),col=c("black","red"),lty=c(1,1),lwd=c(3,3))
+
+h2o.auc(mod2.glm1,valid=FALSE) # on train                   
+mod2.glm1@model$training_metrics@metrics$max_criteria_and_metric_scores
+```
+
+
+
+#### 2.A - Logistic Regression (GLM) (2)
+```{r}
+mod2.glm2 <- h2o.glm(family= "binomial", x= features, y="class_revenue", training_frame=x, lambda = 0)
+
+# Retrieve a graphical plot of the standardized coefficient magnitudes
+h2o.std_coef_plot(mod2.glm2)
+
+mod2.glm2@model$training_metrics
+```
+```{r}
+summary(mod2.glm2)
+#MSE:  0.01070949
+#RMSE:  0.1034867
+#LogLoss:  0.04003829
+#Mean Per-Class Error:  0.2183695
+#AUC:  0.9762201
+#pr_auc:  0.4197409
+#Gini:  0.9524402
+#R^2:  0.2554843
+#Residual Deviance:  54373.28
+#AIC:  55179.28
+
+```
+```{r}
+h2o.varimp_plot(mod2.glm2)
+h2o.confusionMatrix(mod2.glm2, valid = FALSE)
+```
+
+#### 2.B - Decision Tree
+
+```{r}
+#### decisiontree ###
+# Import our required libraries
+install.packages("rpart"); 
+install.packages("rpart.plot");
+library(rpart)
+library(rpart.plot)
+library(rattle)
+# Create a classification decision tree using "Class" as the variable we want to predict and everything else as its predictors.
+###DecisionTree###
+
+DecisionTree <- rpart(as.factor(in_usa)~pageviews+hits+visitNumber+newVisits+isTrueDirect+isMobile+bounces+adwordsClickInfo.isVideoAd+adwordsClickInfo.page, data = training_set)
+# Print out a summary of our created model.
+print(DecisionTree)
+fancyRpartPlot(DecisionTree)
+
+rpart.plot(DecisionTree, type = 3, extra = 2, under = TRUE, faclen=5, cex = .75)
+summary(DecisionTree)
+# How accurate my model is 
+#test =test_set
+
+mean((DecisionTree - train$in_usa)^2)
+
+predicted_DecisionTree <- predict(DecisionTree, test_set)
+
+#test_set$Class=ifelse(test_set$log_revenue==0,0,1)
+yhat_DecisionTree = ifelse(predicted_DecisionTree> 0.5, 1,0)
+# show some values of the vectors
+y <- test_set[,c('in_usa')]
+head(predicted_DecisionTree)
+head(yhat_DecisionTree)
+1-mean(yhat_DecisionTree==y) # accuracy
+```
+
+
+#### 2.C - Random Forest (1)
+```{r}
+mod2.rf1 <- h2o.randomForest(         ## h2o.randomForest function
+  training_frame = x,        ## the H2O frame for training
+  x=features,                        ## the predictor columns, by column index
+  y="in_usa",                          ## the target index (what we are predicting)
+  model_id = "mod2.rf2",    ## name the model in H2O
+                                 ##   not required, but helps use Flow
+  ntrees = 200,                  ## use a maximum of 200 trees to create the
+                                 ##  random forest model. The default is 50.
+                                 ##  I have increased it because I will let 
+                                 ##  the early stopping criteria decide when
+                                 ##  the random forest is sufficiently accurate
+  stopping_rounds = 2,           ## Stop fitting new trees when the 2-tree
+                                 ##  average is within 0.001 (default) of 
+                                 ##  the prior two 2-tree averages.
+                                 ##  Can be thought of as a convergence setting
+  score_each_iteration = T,      ## Predict against training and validation for
+                                 ##  each tree. Default will skip several.
+  seed = 1000000)                ## Set the random seed so that this can be
+                                 ##  reproduced.
+```
+```{r}
+summary(mod2.rf1)                     ## View information about the model.
+                                 ## Keys to look for are validation performance
+                                ##  and variable importance
+```
+```{r}
+mod2.rf1@model$training_metrics   ## A more direct way to access the validation 
+                                 ##  metrics. Performance metrics depend on 
+                                 ##  the type of model being built. With a
+                                 ##  multinomial classification, we will primarily
+                                 ##  look at the confusion matrix, and overall
+                                 ##  accuracy via hit_ratio @ k=1.
+
+#MSE:  1.391572e-06
+#RMSE:  0.001179649
+#MAE:  1.350104e-05
+#RMSLE:  0.0006232082
+#Mean Residual Deviance :  1.391572e-06
+#R^2 :  0.999973
+```
+```{r}
+h2o.varimp_plot(mod2.rf1)
+```
+
+#### 2.C - Random Forest (2)
+```{r}
+mod2.rf2 <- h2o.randomForest(         ## h2o.randomForest function
+  training_frame = x,        ## the H2O frame for training
+  x=features,                        ## the predictor columns, by column index
+  y="class_revenue",                          ## the target index (what we are predicting)
+  model_id = "mod2.rf2",    ## name the model in H2O
+                                 ##   not required, but helps use Flow
+  ntrees = 200,                  ## use a maximum of 200 trees to create the
+                                 ##  random forest model. The default is 50.
+                                 ##  I have increased it because I will let 
+                                 ##  the early stopping criteria decide when
+                                 ##  the random forest is sufficiently accurate
+  stopping_rounds = 2,           ## Stop fitting new trees when the 2-tree
+                                 ##  average is within 0.001 (default) of 
+                                 ##  the prior two 2-tree averages.
+                                 ##  Can be thought of as a convergence setting
+  score_each_iteration = T,      ## Predict against training and validation for
+                                 ##  each tree. Default will skip several.
+  seed = 1000000)                ## Set the random seed so that this can be
+                                 ##  reproduced.
+```
+```{r}
+summary(mod2.rf2)                     ## View information about the model.
+                                 ## Keys to look for are validation performance
+                                ##  and variable importance
+```
+```{r}
+mod2.rf2@model$training_metrics   ## A more direct way to access the validation 
+                                 ##  metrics. Performance metrics depend on 
+                                 ##  the type of model being built. With a
+                                 ##  multinomial classification, we will primarily
+                                 ##  look at the confusion matrix, and overall
+                                 ##  accuracy via hit_ratio @ k=1.
+
+#MSE:  0.01071677
+#RMSE:  0.1035218
+#MAE:  0.01917811
+#RMSLE:  0.07315558
+#Mean Residual Deviance :  0.01071677
+#R^2 :  0.2549785
+```
+```{r}
+h2o.varimp_plot(mod2.rf2)
+```
+
+#### 2.D - Gradient Boosting algorithms
+##### 2.D.a - GBM (1)
+
+```{r}
+mod2.gbm1 <- h2o.gbm(
+  training_frame = x,     ##
+   x=features,                        ## the predictor columns, by column index
+  y="in_usa",               
+  ntrees = 30,                ## add a few trees (from 20, though default is 50)
+  learn_rate = 0.3,           ## increase the learning rate even further
+  max_depth = 10,             ## 
+  sample_rate = 0.7,          ## use a random 70% of the rows to fit each tree
+  col_sample_rate = 0.7,       ## use 70% of the columns to fit each tree
+  stopping_rounds = 2,        ## 
+  stopping_tolerance = 0.01,  ##
+  score_each_iteration = T,   ##
+  model_id = "mod2.gbm1",  ##
+  seed = 2000000)             ##
+```
+```{r}
+summary(mod2.gbm1)
+```
+
+```{r}
+mod2.gbm1@model$training_metrics 
+#MSE:  7.080306e-07
+#RMSE:  0.0008414456
+#MAE:  1.525262e-05
+#RMSLE:  0.000427903
+#Mean Residual Deviance :  7.080306e-07
+#R^2 :  0.9999863
+```
+```{r}
+h2o.varimp_plot(mod2.gbm1)
+```
+##### 2.D.a - GBM (2)
+
+```{r}
+mod2.gbm2 <- h2o.gbm(
+  training_frame = x,     ##
+   x=features,                        ## the predictor columns, by column index
+  y="class_revenue",               
+  ntrees = 30,                ## add a few trees (from 20, though default is 50)
+  learn_rate = 0.3,           ## increase the learning rate even further
+  max_depth = 10,             ## 
+  sample_rate = 0.7,          ## use a random 70% of the rows to fit each tree
+  col_sample_rate = 0.7,       ## use 70% of the columns to fit each tree
+  stopping_rounds = 2,        ## 
+  stopping_tolerance = 0.01,  ##
+  score_each_iteration = T,   ##
+  model_id = "mod2.gbm2",  ##
+  seed = 2000000)             ##
+```
+```{r}
+summary(mod2.gbm2)
+```
+
+```{r}
+mod2.gbm2@model$training_metrics 
+#MSE:  0.008636744
+#RMSE:  0.09293408
+#MAE:  0.01827277
+#RMSLE:  0.06489522
+#Mean Residual Deviance :  0.008636744
+#R^2 :  0.39958
+```
+```{r}
+h2o.varimp_plot(mod2.gbm2)
+```
+
+##### 2.D.b - XGBoost (1)
+```{r}
+mod2.xgboost1 <-h2o.xgboost( x= features, y="in_usa", training_frame=x,
+                              ntrees = 50,                ## add a few trees (from 20, though default is 50)
+  learn_rate = 0.3,           ## increase the learning rate even further
+  max_depth = 10,             ## 
+  sample_rate = 0.7,          ## use a random 70% of the rows to fit each tree
+  col_sample_rate = 0.7,       ## use 70% of the columns to fit each tree
+  stopping_rounds = 2,        ## 
+  stopping_tolerance = 0.01,  ##
+  score_each_iteration = T,   ##
+  model_id = "mod2.xgboost1",  ##
+  seed = 20080)  
+
+```
+```{r}
+mod2.xgboost1@model$training_metrics
+```
+```{r}
+summary(mod2.xgboost1)
+#MSE:  1.704985e-11
+#RMSE:  4.129146e-06
+#MAE:  2.127901e-06
+#RMSLE:  2.671462e-06
+#Mean Residual Deviance :  1.704985e-11
+```
+```{r}
+h2o.varimp_plot(mod2.xgboost1)
+```
+##### 2.D.c - XGBoost (2)
+```{r}
+mod2.xgboost2 <-h2o.xgboost( x= features, y="class_revenue", training_frame=x,
+                              ntrees = 50,                ## add a few trees (from 20, though default is 50)
+  learn_rate = 0.3,           ## increase the learning rate even further
+  max_depth = 10,             ## 
+  sample_rate = 0.7,          ## use a random 70% of the rows to fit each tree
+  col_sample_rate = 0.7,       ## use 70% of the columns to fit each tree
+  stopping_rounds = 2,        ## 
+  stopping_tolerance = 0.01,  ##
+  score_each_iteration = T,   ##
+  model_id = "mod2.xgboost2",  ##
+  seed = 20081)  
+
+```
+```{r}
+mod2.xgboost2@model$training_metrics
+#MSE:  0.00793347
+#RMSE:  0.08907003
+#MAE:  0.01830242
+#RMSLE:  0.06226154
+#Mean Residual Deviance :  0.00793347
+```
+```{r}
+summary(mod2.xgboost2)
+```
+```{r}
+h2o.varimp_plot(mod2.xgboost2)
+```
+##### 2.E Sauvegarder des Résultats Predit des differentes modèles dans submission  
+```{r}
+sample_submission <- read_csv("/Users/imahamat/Documents/IBO/IBO_5A/Apprentissage/Projet-Apprentissage/sample_submission.csv")
+names(sample_submission)
+```
+```{r}
+
+####### In_USA ###
+
+# On choisi mod2.xgboost1 
+predictions <- as.data.frame(h2o.predict(mod2.xgboost2,x_text))
+
+#test_set$Class=ifelse(test_set$log_revenue==0,0,1)
+yhat = ifelse(predictions> 0.5, 1,0)
+# show some values of the vectors
+y <- test_set[,c('in_usa')]
+head(predictions)
+tail(yhat)
+mean(yhat==y) # accuracy
+
+####### Class Revenue ###
+# On choisi mod2.xgboost1 
+predictions_2 <- as.data.frame(h2o.predict(mod2.,x_text))
+#test_set$Class=ifelse(test_set$log_revenue==0,0,1)
+yhat_2 = ifelse(predictions_2> 0.5, 1,0)
+# show some values of the vectors
+y_2 <- test_set[,c('class_revenue')]
+head(predictions_2)
+tail(yhat_2)
+mean(yhat_2==y_2) # accuracy
+
+```
+```{r}
+submission <- data.frame(fullVisitorId=test_set$fullVisitorId, PredictedClassState=predictions)
+names(submission)[1] <- "fullVisitorId"
+names(submission)[2] <- "PredictedClassState"
+```
+```{r}
+submission <- submission  %>% group_by(fullVisitorId)  %>% summarise(PredictedLogRevenue = sum(predictions))
+glimpse(submission)
+```
+```{r}
+write.csv(submission,"/Users/imahamat/Documents/IBO/IBO_5A/Apprentissage/Projet-Apprentissage/h2o_mod2.xboost1.csv",row.names=F)
+```
+
+
+
+
+
+
+
